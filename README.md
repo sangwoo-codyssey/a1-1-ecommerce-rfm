@@ -8,7 +8,7 @@ RFM 으로 고객을 4개 이상 세그먼트로 나눠 데이터 근거가 있�
 
 - 과제 원문: 로컬 `../a1-1-ecommerce-rfm.md`
 - AI 심화 학습 · 데이터 분석 · 60시간 · 필수 · 개인
-- Python 3.8 이상
+- Python 3.12 이상 (과제 조건은 3.8 이상 — 고정한 `numpy==2.5.4` 가 3.12 를 요구한다)
 
 ## 설치 및 실행
 
@@ -16,6 +16,8 @@ RFM 으로 고객을 4개 이상 세그먼트로 나눠 데이터 근거가 있�
 uv venv --python 3.12 .venv && source .venv/bin/activate
 uv pip install -r requirements.txt   # uv 가 없으면 python -m venv .venv 후 pip install -r requirements.txt
 ```
+
+`requirements.txt` 는 버전을 `==` 로 고정했다. `jupyterlab`·`ipykernel` 은 노트북 실행용이고 분석 코드에서는 쓰지 않는다.
 
 진입점(노트북·스크립트)은 착수 때 정한다.
 
@@ -28,7 +30,22 @@ uv pip install -r requirements.txt   # uv 가 없으면 python -m venv .venv 후
 | RFM 거래 데이터 | `customer_id`, `order_date`, `amount`(또는 price*qty) |
 | 출처 | Kaggle·AI Hub 등 공개 라이선스 우선, **출처 명시 필수** |
 
-데이터셋 선정: _미정_ (착수 첫 결정)
+### 사용 데이터셋
+
+**H&M Personalized Fashion Recommendations** (Kaggle 대회 데이터)
+— https://www.kaggle.com/competitions/h-and-m-personalized-fashion-recommendations/data
+
+| 파일 | 크기 | 행 수 | 열 수 | 주요 열 |
+|---|---|---|---|---|
+| `transactions_train.csv` | 3.49GB | 31,788,324 | 5 | `t_dat`, `customer_id`, `article_id`, `price`, `sales_channel_id` |
+| `articles.csv` | 36.1MB | 105,542 | 25 | `article_id`, `prod_name`, `product_type_name`, `colour_group_name`, `detail_desc` 등 |
+| `customers.csv` | 207MB | 1,371,980 | 7 | `customer_id`, `age`, `club_member_status`, `fashion_news_frequency` 등 |
+| `images/` | — | — | — | 상품 사진(`article_id` 별 JPG) — 표본 기준을 정한 뒤 일부만 받는다 |
+
+- **라이선스**: Kaggle 대회 규칙(Competition Rules)을 따른다. 재배포가 금지돼 있어 원본·가공본·사진 모두
+  레포에 올리지 않는다(`.gitignore` 의 `data/`).
+- **받는 방법**: Kaggle 에 로그인해 대회 규칙에 동의한 뒤, Data 탭에서 위 CSV 3개를 파일별로 내려받아
+  `data/raw/` 에 압축을 푼다.
 
 ## 라이브러리 제약 (과제 §6·§7)
 
