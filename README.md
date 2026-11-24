@@ -13,6 +13,7 @@ RFM(Recency·Frequency·Monetary, 최근성·빈도·금액)으로 고객을 6�
 - H&M 거래 12개월(2019-09-23 ~ 2020-09-22)에서 고객 1만 명을 뽑아, 그 고객의 거래 **149,548줄**을 상품·고객 정보와 결합했다.
 - 상품 사진 1,000장을 `(1000, 175, 63, 3)` 배열 하나로 쌓아 사진마다 도는 반복문 없이 평균·표준편차 피처를 만들었다.
 - RFM 세분화 결과 **VIP 20.6% 가 매출의 55.4%** 를 내고, 1회 고객이 34.5%, 단골이었다가 멈춘 At Risk 가 566명이다 → [비즈니스 인사이트](#비즈니스-인사이트)
+- 노트북의 실행 결과(표·차트·해석)는 [`notebooks/analysis_report.md`](notebooks/analysis_report.md) 에서 텍스트와 그림 파일로도 볼 수 있다.
 
 ## 프로젝트 구조
 
@@ -22,7 +23,9 @@ a1-1-ecommerce-rfm/
 │   ├── pipeline.py           # DataAnalyzer 클래스 + iqr_bounds·summary_stats·correlation_pairs
 │   └── extract_images.py     # 전체 zip 에서 표본 상품 사진 n장만 꺼내기
 ├── notebooks/
-│   └── analysis_report.ipynb # 분석 리포트 (1~5장, 실행 결과 포함)
+│   ├── analysis_report.ipynb # 분석 리포트 (1~5장, 실행 결과 포함)
+│   ├── analysis_report.md    # 위 노트북의 실행 결과 Markdown 사본 (nbconvert 로 생성)
+│   └── analysis_report_files/ # 사본이 쓰는 차트 그림 8장
 ├── requirements.txt
 └── data/                     # git 제외 — raw/(CSV·zip), images/(사진 1,000장)
 ```
@@ -40,11 +43,30 @@ python -m src.extract_images         # 기본 1,000장·random_state=42 → data
 # 3) 노트북 — 열어서 보거나, 처음부터 끝까지 다시 실행
 jupyter lab notebooks/analysis_report.ipynb
 jupyter nbconvert --to notebook --execute --inplace notebooks/analysis_report.ipynb
+jupyter nbconvert --to markdown notebooks/analysis_report.ipynb   # Markdown 사본·그림 파일 갱신
 ```
 
 - `requirements.txt` 는 버전을 `==` 로 고정했다. `jupyterlab`·`ipykernel` 은 노트북 실행용이고 분석 코드에서는 쓰지 않는다.
 - 표본은 저장하지 않고 `load_data()` 가 매번 원본에서 거른다. 원본 3.49GB 를 덩어리로 읽어 약 9초, 최대 메모리 약 2.2GB 가 든다. 노트북 전체 실행은 약 20초다.
 - 고객 표본·사진 표본은 `random_state=42` 로 고정돼 있어 다시 실행해도 같은 고객·같은 사진이 뽑힌다.
+
+## 실행 검증
+
+```bash
+$ jupyter nbconvert --to notebook --execute --inplace notebooks/analysis_report.ipynb; echo "exit=$?"
+[NbConvertApp] Converting notebook notebooks/analysis_report.ipynb to notebook
+[NbConvertApp] Writing 511340 bytes to notebooks/analysis_report.ipynb
+exit=0
+```
+
+| 확인 (2026-11-25 실행) | 결과 |
+|---|---|
+| 셀 | 79개 (코드 42 · 마크다운 37) |
+| 출력이 있는 코드 셀 | 41 / 42 (출력이 없는 1개는 import 셀) |
+| 오류 출력 | 0 |
+| 차트 그림 | 8장 (`notebooks/analysis_report_files/`) |
+| 데이터 결합 | 149,548줄 × 23열, 상품·고객 결합 누락 0 (노트북 1장 `load_summary`) |
+| 실행 시간 | 약 20초 (그중 `load_data()` 약 9초) |
 
 ## 데이터 (과제 §4-1·§7)
 
@@ -115,6 +137,7 @@ jupyter nbconvert --to notebook --execute --inplace notebooks/analysis_report.ip
 
 - **Recency**: 기준일 2020-09-22(데이터 마지막 거래일) − 마지막 구매일. **Frequency**: 주문 수(주문 1건 = 같은 고객 + 같은 날짜). **Monetary**: 원본 `price` 합계.
 - **점수**: R·M 은 5분위(20%씩). F 는 1회 고객이 34.5% 라 5분위 경계가 겹치므로 고정 구간 1회 / 2회 / 3~4회 / 5~9회 / 10회 이상.
+- **F 를 고정 구간으로 둔 근거**: 주문 수가 1회 34.5%, 2회 16.1% 로 작은 값에 몰려, 5분위 경계가 `[1, 1, 2, 3, 7, 86]` 으로 0%·20% 지점이 겹친다(`pd.qcut` 오류 `Bin edges must be unique`, 노트북 5-1). 그래서 1회·2회는 각각 한 점수로 두고(재구매 여부가 가장 큰 구분), 3회 이상은 R·M 의 20% 와 비슷한 크기가 되게 3~4회(18.0%)·5~9회(20.1%)로 묶고, 나머지를 10회 이상(11.4%)으로 했다.
 
 | 순서 | 세그먼트 | 조건 | 고객 수 (%) | 매출 % | R·F 중앙값 |
 |---|---|---|---|---|---|
@@ -124,6 +147,29 @@ jupyter nbconvert --to notebook --execute --inplace notebooks/analysis_report.ip
 | 4 | At Risk | R ≤ 2, F ≥ 3 | 566 (5.7) | 4.4 | 180일 · 3회 |
 | 5 | Churned | R ≤ 2, F ≤ 2 | 3,145 (31.5) | 9.2 | 234일 · 1회 |
 | 6 | Regular | 나머지 | 2,568 (25.7) | 14.7 | 62일 · 2회 |
+
+## 시각화 (과제 §4-6)
+
+모든 차트는 영어 제목과 축 레이블을 단다(한글 폰트 깨짐 방지). 그림은 노트북 실행 결과를 `nbconvert` 로 꺼낸 파일이다.
+
+| 유형 | 노트북 | 그림 | 제목 | x축 | y축 |
+|---|---|---|---|---|---|
+| 히스토그램 | 4-2 | [age](notebooks/analysis_report_files/analysis_report_48_0.png) | Customer age distribution (1 customer = 1 count, 2-year bins) | age | customers |
+| 박스플롯 (처리 전후) | 3-2 | [price](notebooks/analysis_report_files/analysis_report_36_0.png) | Price distribution before / after IQR clipping (threshold=1.5) — Before: raw price / After: clipped at IQR bounds | column | price (scaled) |
+| 막대 | 4-3 | [분류](notebooks/analysis_report_files/analysis_report_53_0.png) | Share by index group: transactions vs product kinds | index_group_name | share (%) |
+| 막대 | 5-2 | [세그먼트](notebooks/analysis_report_files/analysis_report_74_0.png) | RFM segments: share of customers vs share of revenue (n=10,000 customers) | segment | share (%) |
+| 히트맵 | 4-4 | [상관행렬](notebooks/analysis_report_files/analysis_report_57_0.png) | Correlation matrix of product features (n=1,000 products with photo) | feature | feature |
+| 히트맵 | 5-2 | [R×F](notebooks/analysis_report_files/analysis_report_75_0.png) | Customers by R score x F score | F score (1 = 1 order ... 5 = 10+ orders) | R score (5 = most recent) |
+| 산점도 | 4-4 | [밝기↔가격](notebooks/analysis_report_files/analysis_report_58_0.png) | Photo brightness vs average price (n=1,000, r=-0.23) | img_mean (0=dark, 255=bright) | avg_price (scaled) |
+| 라인 | 4-5 | [월별 매출](notebooks/analysis_report_files/analysis_report_64_1.png) | Monthly sales (sum of price), 2019-10 ~ 2020-08 full months | month | sales (sum of scaled price) |
+
+**IQR 처리 전후 박스플롯** (노트북 3-2) — 경계 −0.0095 ~ 0.0599, 위쪽 이상치 7,331줄(4.9%)을 경계값으로 잘라 최댓값 0.4220 → 0.0599, 표준편차 0.0191 → 0.0145.
+
+![IQR 처리 전후 박스플롯](notebooks/analysis_report_files/analysis_report_36_0.png)
+
+**RFM 세그먼트별 고객 비중 vs 매출 비중** (노트북 5-2)
+
+![세그먼트별 고객·매출 비중](notebooks/analysis_report_files/analysis_report_74_0.png)
 
 ## 비즈니스 인사이트
 
@@ -144,6 +190,17 @@ jupyter nbconvert --to notebook --execute --inplace notebooks/analysis_report.ip
 - **근거**: At Risk 는 주문 중앙값 3회의 단골이었지만 마지막 구매가 중앙값 180일 전이다. 금액 중앙값 0.254 로 Regular(0.178)의 1.4배, Churned(0.083)의 3배다(5-2 세그먼트 표).
 - **실행**: At Risk 에게 과거에 산 분류의 신상품 소식과 재방문 쿠폰을 보낸다. 같은 이탈 고객이라도 Churned 보다 금액이 3배인 고객부터 되찾으면, 캠페인 비용 대비 회수 금액이 커진다.
 - **검증**: 1년치만 봤기 때문에 이들이 떠난 것인지, 원래 몇 달에 한 번 사는 고객인지 구분할 수 없다. 원본의 이전 거래(2018-09-20 ~)로 작년에도 비슷한 공백 뒤에 돌아왔는지 확인하면 반증할 수 있다.
+
+## 규모를 키울 때의 병목
+
+| 단계 | 이 표본의 실측 | 병목 |
+|---|---|---|
+| `load_data()` | 원본 31,788,324줄을 200만 줄씩 읽어 약 9초, 최대 메모리 약 2.3GB(`/usr/bin/time -l`), 결과 표는 177MB | 고객을 뽑기 전에 기간 안 14,898,423줄을 전부 메모리에 모은다 |
+| `add_image_features()` | 사진 1,000장 읽기·다운샘플 약 4.9초, 평균·표준편차 계산 약 0.1초 (노트북 2-2) | 시간의 약 98% 가 JPEG 해독(파일 읽기) |
+
+- **지금 설계에서**: 1차로 `customer_id`·`t_dat` 열만 읽어 대상 고객을 정하고, 2차로 그 고객 줄만 남기며 읽으면 최대 메모리가 표본 크기에 비례한다.
+- **고객 전체(994,320명)로 늘리면**: 결과 표만 약 18GB 로 추정된다. 거래 줄을 다 들고 있지 말고 덩어리마다 고객별로 집계(마지막 구매일·금액 합·구매 날짜)해 합친다. 64자 `customer_id` 는 정수 코드로, `price` 는 `float32` 로 줄인다.
+- **사진 전체(105,100장)로 늘리면**: 같은 속도로 읽기만 약 8~9분이 걸린다. 다운샘플 배열은 장당 33KB(175×63×3 `uint8`)라 약 3.5GB 이고, 원본 크기(1750×1166×3, 장당 약 6.1MB)로 쌓으면 약 640GB 라 불가능하다. 사진을 묶음(batch)으로 읽어 평균·표준편차만 남기고 배열은 버린다. 표준 라이브러리 `concurrent.futures` 프로세스 풀로 해독을 나누면 코어 수에 가깝게 시간이 줄어든다(이론값, 미측정).
 
 ## 라이브러리 제약 (과제 §6·§7)
 
