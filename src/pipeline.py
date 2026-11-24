@@ -53,6 +53,17 @@ def _center_crop(arr: np.ndarray, h: int, w: int) -> np.ndarray:
     return arr[top:top + h, left:left + w]
 
 
+# RFM 세그먼트 규칙 — (이름, 점수 조건). 위에서부터 처음 맞는 규칙 하나에 배정한다.
+# 조건은 DataFrame.eval 문자열이라 R·F·M 점수 열 이름을 그대로 쓴다.
+SEGMENT_RULES = [
+    ("VIP", "R >= 4 and F >= 4 and M >= 4"),   # 최근에, 자주, 많이
+    ("Loyal", "F >= 4"),                        # 자주 온다 (VIP 조건은 못 채움)
+    ("New", "R >= 4 and F == 1"),               # 최근에 한 번 왔다
+    ("At Risk", "R <= 2 and F >= 3"),           # 전엔 자주 왔는데 요즘 안 온다
+    ("Churned", "R <= 2 and F <= 2"),           # 오래전에 한두 번
+]
+
+
 def iqr_bounds(series: pd.Series, threshold: float = 1.5) -> tuple[float, float]:
     """IQR(Interquartile Range, 사분위 범위) 방식의 이상치 경계 (lower, upper) 를 돌려준다.
 
@@ -95,6 +106,8 @@ class DataAnalyzer:
         self.image_stack: np.ndarray | None = None
         self.image_ids: np.ndarray | None = None
         self.image_summary: dict = {}
+        self.rfm: pd.DataFrame | None = None
+        self.rfm_reference_date: pd.Timestamp | None = None
 
     def load_data(
         self,
@@ -345,3 +358,73 @@ class DataAnalyzer:
             if not end.is_month_end:
                 sales = sales[sales.index < end.to_period("M")]
         return sales
+
+    def calculate_rfm(
+        self,
+        customer_col: str = "customer_id",
+        date_col: str = "t_dat",
+        amount_col: str = "price",
+        reference_date: str | None = None,
+        n_quantiles: int = 5,
+        f_bins: tuple[float, ...] = (0, 1, 2, 4, 9, np.inf),
+    ) -> pd.DataFrame:
+        """고객별 R·F·M 값과 점수를 계산해 `self.rfm` 에 둔다.
+
+        값:
+        - recency: 기준일 − 마지막 구매일(일). 기준일 기본값 = load_data() 의 end_date(데이터 마지막 날)
+        - frequency: 주문 수 = 서로 다른 구매 날짜 수 (주문 1건 = 같은 고객 + 같은 날짜)
+        - monetary: amount_col 합계. 중복 줄은 같은 상품 여러 개라 지우지 않은 원본 그대로 더한다
+        - items: 구매 줄 수 (세그먼트 평균 단가 = monetary 합 / items 합)
+        점수(클수록 좋은 고객):
+        - R·M: n_quantiles 분위. R 은 recency 가 작을수록(최근일수록) 높은 점수
+        - F: 1회 고객이 많아 분위 경계가 겹치므로 f_bins 고정 구간 (기본 1 / 2 / 3~4 / 5~9 / 10회 이상)
+        """
+        df = self._require_df()
+        ref = pd.Timestamp(reference_date or self.load_summary.get("end_date") or df[date_col].max())
+        g = df.groupby(customer_col)
+        rfm = pd.DataFrame({
+            "recency": (ref - g[date_col].max()).dt.days,
+            "frequency": g[date_col].nunique(),
+            "monetary": g[amount_col].sum(),
+            "items": g[amount_col].size(),
+        })
+        scores = list(range(1, n_quantiles + 1))
+        rfm["R"] = pd.qcut(rfm["recency"], n_quantiles, labels=scores[::-1]).astype(int)
+        rfm["F"] = pd.cut(rfm["frequency"], bins=list(f_bins), labels=list(range(1, len(f_bins)))).astype(int)
+        rfm["M"] = pd.qcut(rfm["monetary"], n_quantiles, labels=scores).astype(int)
+        self.rfm, self.rfm_reference_date = rfm, ref
+        return rfm
+
+    def _require_rfm(self) -> pd.DataFrame:
+        if self.rfm is None:
+            raise RuntimeError("calculate_rfm() 을 먼저 실행해야 한다")
+        return self.rfm
+
+    def segment_customers(
+        self, rules: list[tuple[str, str]] = SEGMENT_RULES, default: str = "Regular"
+    ) -> pd.DataFrame:
+        """점수 규칙으로 `segment` 열을 붙인다. 위에서부터 처음 맞는 규칙에 배정하고, 아무 규칙에도 안 맞으면 default."""
+        rfm = self._require_rfm()
+        names = [name for name, _ in rules]
+        conditions = [rfm.eval(expr).to_numpy() for _, expr in rules]
+        rfm["segment"] = pd.Categorical(np.select(conditions, names, default=default), categories=[*names, default])
+        return rfm
+
+    def segment_summary(self) -> pd.DataFrame:
+        """세그먼트별 고객 수·비중, R·F·M 중앙값, 매출 비중, 평균 단가."""
+        rfm = self._require_rfm()
+        if "segment" not in rfm.columns:
+            raise RuntimeError("segment_customers() 를 먼저 실행해야 한다")
+        s = rfm.groupby("segment", observed=True).agg(
+            customers=("recency", "size"),
+            recency_median=("recency", "median"),
+            frequency_median=("frequency", "median"),
+            monetary_median=("monetary", "median"),
+            revenue=("monetary", "sum"),
+            items=("items", "sum"),
+        )
+        s["customer_%"] = s["customers"] / s["customers"].sum() * 100
+        s["revenue_%"] = s["revenue"] / s["revenue"].sum() * 100
+        s["avg_price"] = s["revenue"] / s["items"]
+        return s[["customers", "customer_%", "recency_median", "frequency_median",
+                  "monetary_median", "revenue_%", "avg_price"]]
