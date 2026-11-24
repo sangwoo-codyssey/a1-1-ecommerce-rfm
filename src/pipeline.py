@@ -64,6 +64,26 @@ def iqr_bounds(series: pd.Series, threshold: float = 1.5) -> tuple[float, float]
     return float(q1 - threshold * iqr), float(q3 + threshold * iqr)
 
 
+def summary_stats(frame: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
+    """열마다 개수·평균·표준편차·최솟값·사분위수(Q1·중앙값·Q3)·최댓값을 한 줄로 정리한다."""
+    data = frame[cols]
+    stats = data.agg(["count", "mean", "std", "min"]).T
+    stats["q1"] = data.quantile(0.25)
+    stats["median"] = data.median()
+    stats["q3"] = data.quantile(0.75)
+    stats["max"] = data.max()
+    return stats
+
+
+def correlation_pairs(frame: pd.DataFrame, pairs: list[tuple[str, str]]) -> pd.DataFrame:
+    """변수 쌍마다 두 값이 다 있는 줄만 남겨 피어슨 상관계수(r)와 그 줄 수(n)를 구한다."""
+    rows = []
+    for x, y in pairs:
+        both = frame[[x, y]].dropna()
+        rows.append({"x": x, "y": y, "n": len(both), "r": both[x].corr(both[y])})
+    return pd.DataFrame(rows)
+
+
 class DataAnalyzer:
     """거래 줄 단위 표 하나(`self.df`)를 들고 분석 단계를 차례로 적용한다."""
 
@@ -276,3 +296,52 @@ class DataAnalyzer:
         self.outlier_bounds[column] = (lower, upper)
         df[new_col or f"{column}_clipped"] = df[column].clip(lower, upper)
         return df
+
+    def customer_table(self, customer_col: str = "customer_id", amount_col: str = "price") -> pd.DataFrame:
+        """고객 1명 = 1줄 표. 거래 줄 표에서는 자주 사는 고객의 age 가 구매 줄 수만큼 반복되어 세어진다.
+
+        - age: 고객 속성이라 고객마다 같은 값 → 첫 값
+        - n_items: 구매 줄 수 = 산 상품 개수(중복 줄 = 같은 상품 여러 개)
+        - avg_price: 구매 줄의 평균 가격(평균 단가)
+        """
+        df = self._require_df()
+        return df.groupby(customer_col).agg(
+            age=("age", "first"),
+            n_items=(amount_col, "size"),
+            avg_price=(amount_col, "mean"),
+        )
+
+    def product_table(self, article_col: str = "article_id", amount_col: str = "price") -> pd.DataFrame:
+        """상품 1개 = 1줄 표. 같은 상품도 할인 등으로 가격이 달라 avg_price 는 판매 줄의 평균이다.
+
+        상품 속성 열(분류·상품명 피처·이미지 피처)은 상품마다 같은 값이라 첫 값을 쓴다.
+        피처 메서드를 실행하지 않았으면 그 열은 빠진다.
+        """
+        df = self._require_df()
+        attrs = [c for c in ("index_group_name", "garment_group_name", "prod_name_length", "prod_name_word_count",
+                             "img_mean", "img_std")
+                 if c in df.columns]
+        return df.groupby(article_col).agg(
+            avg_price=(amount_col, "mean"),
+            n_sold=(amount_col, "size"),
+            **{c: (c, "first") for c in attrs},
+        )
+
+    def monthly_sales(
+        self, date_col: str = "t_dat", amount_col: str = "price", full_months_only: bool = True
+    ) -> pd.Series:
+        """월별 매출(amount_col 합계).
+
+        full_months_only 면 load_data() 기간의 첫 달·마지막 달이 한 달을 다 채우지 못할 때 뺀다
+        (예: 2019-09 은 23~30일뿐이라 매출이 급감한 것처럼 보인다).
+        """
+        df = self._require_df()
+        sales = df.groupby(df[date_col].dt.to_period("M"))[amount_col].sum()
+        if full_months_only:
+            start = pd.Timestamp(self.load_summary.get("start_date", df[date_col].min()))
+            end = pd.Timestamp(self.load_summary.get("end_date", df[date_col].max()))
+            if start.day != 1:
+                sales = sales[sales.index > start.to_period("M")]
+            if not end.is_month_end:
+                sales = sales[sales.index < end.to_period("M")]
+        return sales
