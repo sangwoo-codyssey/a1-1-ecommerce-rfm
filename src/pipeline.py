@@ -102,6 +102,7 @@ class DataAnalyzer:
         self.df: pd.DataFrame | None = None
         self.load_summary: dict = {}
         self.missing_report: pd.DataFrame | None = None
+        self.imputed_rows: pd.Series | None = None
         self.outlier_bounds: dict[str, tuple[float, float]] = {}
         self.image_stack: np.ndarray | None = None
         self.image_ids: np.ndarray | None = None
@@ -220,13 +221,16 @@ class DataAnalyzer:
         ids = articles[has_image].to_numpy()
 
         # 파일 읽기(디스크 → 배열)는 사진마다 한 번씩 할 수밖에 없다. 계산은 아래에서 배열 하나로 한다.
+        started = time.perf_counter()
         small = [_as_rgb(plt.imread(p))[::step, ::step] for p in paths[has_image]]
         h = min(a.shape[0] for a in small)
         w = min(a.shape[1] for a in small)
         stack = np.stack([_center_crop(a, h, w) for a in small])
+        read_done = time.perf_counter()
 
         img_mean = stack.mean(axis=(1, 2, 3))
         img_std = stack.std(axis=(1, 2, 3))
+        computed = time.perf_counter()
 
         df["img_mean"] = df["article_id"].map(pd.Series(img_mean, index=ids))
         df["img_std"] = df["article_id"].map(pd.Series(img_std, index=ids))
@@ -238,6 +242,8 @@ class DataAnalyzer:
             "stack_shape": stack.shape,
             "products_with_image": f"{len(ids):,} / {len(articles):,}",
             "rows_with_image": f"{df['img_mean'].notna().sum():,} / {len(df):,}",
+            "read_seconds": round(read_done - started, 2),       # imread·다운샘플·쌓기
+            "compute_seconds": round(computed - read_done, 3),   # 평균·표준편차 계산
         }
         return df
 
@@ -272,6 +278,7 @@ class DataAnalyzer:
 
         touched = [*flag_cols, *category_cols, target_col]
         before = df[touched].isna().sum()
+        self.imputed_rows = df[target_col].isna()  # 대치 효과를 나중에 따로 볼 수 있게 빈칸 위치를 남긴다
 
         df[list(flag_cols)] = df[list(flag_cols)].fillna(0)
         df[list(category_cols)] = df[list(category_cols)].fillna(category_fill)
