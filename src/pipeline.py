@@ -30,12 +30,25 @@ CUSTOMER_COLS = [
 ]
 
 
+def iqr_bounds(series: pd.Series, threshold: float = 1.5) -> tuple[float, float]:
+    """IQR(Interquartile Range, 사분위 범위) 방식의 이상치 경계 (lower, upper) 를 돌려준다.
+
+    threshold 는 IQR 에 곱하는 배수다(관례 1.5, 클수록 이상치를 덜 잡는다).
+    """
+    q1 = series.quantile(0.25)
+    q3 = series.quantile(0.75)
+    iqr = q3 - q1
+    return float(q1 - threshold * iqr), float(q3 + threshold * iqr)
+
+
 class DataAnalyzer:
     """거래 줄 단위 표 하나(`self.df`)를 들고 분석 단계를 차례로 적용한다."""
 
     def __init__(self) -> None:
         self.df: pd.DataFrame | None = None
         self.load_summary: dict = {}
+        self.missing_report: pd.DataFrame | None = None
+        self.outlier_bounds: dict[str, tuple[float, float]] = {}
 
     def load_data(
         self,
@@ -131,4 +144,73 @@ class DataAnalyzer:
         df = self._require_df()
         df[f"{col}_word_count"] = df[col].str.split().str.len()
         df[f"{col}_length"] = df[col].str.len()
+        return df
+
+    def handle_missing_values(
+        self,
+        strategy: str = "group_median",
+        target_col: str = "age",
+        group_cols: list[str] | None = None,
+        unit_col: str | None = "customer_id",
+        flag_cols: tuple[str, ...] = ("FN", "Active"),
+        category_cols: tuple[str, ...] = ("club_member_status", "fashion_news_frequency", "detail_desc"),
+        category_fill: str = "UNKNOWN",
+    ) -> pd.DataFrame:
+        """결측을 세 가지 규칙으로 처리하고 처리 전후 결측 수를 `self.missing_report` 에 남긴다.
+
+        1. flag_cols — 값이 1 하나뿐인 표시 열. 빈칸 = '아니오' 로 보고 0 으로 채운다(인코딩 복원).
+        2. category_cols — 범주·텍스트 열. category_fill 로 채운다. 그룹 기준 열의 빈칸도
+           여기서 먼저 채워야 빈칸 고객도 한 그룹으로 묶여 3번 대치를 받는다.
+        3. target_col — strategy 로 대치한다.
+           - "group_median"/"group_mean": group_cols 그룹의 중앙값/평균 (그룹 값이 없으면 전체 값)
+           - "median"/"mean": 전체 중앙값/평균
+           unit_col 을 주면 통계를 거래 줄이 아니라 unit_col 1개당 1표로 계산한다
+           (자주 사는 고객이 통계를 끌고 가지 않게).
+        """
+        df = self._require_df()
+        if group_cols is None:
+            group_cols = ["club_member_status", "fashion_news_frequency"]
+        func = {"group_median": "median", "median": "median",
+                "group_mean": "mean", "mean": "mean"}.get(strategy)
+        if func is None:
+            raise ValueError(f"알 수 없는 strategy: {strategy}")
+
+        touched = [*flag_cols, *category_cols, target_col]
+        before = df[touched].isna().sum()
+
+        df[list(flag_cols)] = df[list(flag_cols)].fillna(0)
+        df[list(category_cols)] = df[list(category_cols)].fillna(category_fill)
+
+        units = df.drop_duplicates(unit_col) if unit_col else df
+        overall = units[target_col].agg(func)
+        if strategy.startswith("group_"):
+            group_stat = units.groupby(group_cols)[target_col].agg(func).rename("_fill")
+            fill = df[group_cols].join(group_stat, on=group_cols)["_fill"].fillna(overall)
+        else:
+            fill = overall
+        df[target_col] = df[target_col].fillna(fill)
+
+        self.missing_report = pd.DataFrame({"before": before, "after": df[touched].isna().sum()})
+        if strategy.startswith("group_"):
+            self.missing_report.attrs["group_stat"] = group_stat
+        return df
+
+    def detect_outliers(self, column: str = "price", threshold: float = 1.5) -> pd.DataFrame:
+        """IQR 경계 밖의 줄을 돌려준다. 경계는 `self.outlier_bounds[column]` 에 남긴다."""
+        df = self._require_df()
+        lower, upper = iqr_bounds(df[column], threshold)
+        self.outlier_bounds[column] = (lower, upper)
+        return df[(df[column] < lower) | (df[column] > upper)]
+
+    def clip_outliers(
+        self, column: str = "price", threshold: float = 1.5, new_col: str | None = None
+    ) -> pd.DataFrame:
+        """IQR 경계 밖 값을 경계값으로 자른 새 열을 만든다. 원본 열은 그대로 둔다.
+
+        비싼 상품은 입력 오류가 아니라 실제 구매라서 지우지 않는다. RFM 의 M 은 원본 열로 계산한다.
+        """
+        df = self._require_df()
+        lower, upper = iqr_bounds(df[column], threshold)
+        self.outlier_bounds[column] = (lower, upper)
+        df[new_col or f"{column}_clipped"] = df[column].clip(lower, upper)
         return df
