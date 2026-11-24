@@ -9,10 +9,19 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
+import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 RAW_DIR = PROJECT_ROOT / "data" / "raw"
+IMAGE_DIR = PROJECT_ROOT / "data" / "images"
+
+
+def image_relpath(article_id: int) -> str:
+    """article_id → 사진 상대 경로. 0을 채운 10자리, 앞 3자리가 하위 폴더 (예: 010/0108775015.jpg)."""
+    name = f"{article_id:010d}"
+    return f"{name[:3]}/{name}.jpg"
 
 # articles.csv 에서 가져올 열 — 같은 뜻의 숫자 코드(…_no·…_code·…_id)는 빼고 이름 열만 남긴다.
 ARTICLE_COLS = [
@@ -28,6 +37,20 @@ CUSTOMER_COLS = [
     "customer_id", "FN", "Active", "club_member_status",
     "fashion_news_frequency", "age",
 ]
+
+
+def _as_rgb(arr: np.ndarray) -> np.ndarray:
+    """흑백(2차원)은 3채널로 늘리고, RGBA 는 알파를 버려 (세로, 가로, 3) 으로 맞춘다."""
+    if arr.ndim == 2:
+        return np.repeat(arr[:, :, np.newaxis], 3, axis=2)
+    return arr[:, :, :3]
+
+
+def _center_crop(arr: np.ndarray, h: int, w: int) -> np.ndarray:
+    """가운데 기준으로 (h, w) 만 남긴다."""
+    top = (arr.shape[0] - h) // 2
+    left = (arr.shape[1] - w) // 2
+    return arr[top:top + h, left:left + w]
 
 
 def iqr_bounds(series: pd.Series, threshold: float = 1.5) -> tuple[float, float]:
@@ -49,6 +72,9 @@ class DataAnalyzer:
         self.load_summary: dict = {}
         self.missing_report: pd.DataFrame | None = None
         self.outlier_bounds: dict[str, tuple[float, float]] = {}
+        self.image_stack: np.ndarray | None = None
+        self.image_ids: np.ndarray | None = None
+        self.image_summary: dict = {}
 
     def load_data(
         self,
@@ -144,6 +170,42 @@ class DataAnalyzer:
         df = self._require_df()
         df[f"{col}_word_count"] = df[col].str.split().str.len()
         df[f"{col}_length"] = df[col].str.len()
+        return df
+
+    def add_image_features(self, image_dir: str | Path = IMAGE_DIR, step: int = 10) -> pd.DataFrame:
+        """상품 사진의 픽셀 평균(img_mean)·표준편차(img_std) 열을 만든다. 사진이 없는 상품은 NaN.
+
+        1. 사진마다 imread → 슬라이싱 arr[::step, ::step] 으로 다운샘플
+        2. 가장 작은 (세로, 가로) 에 맞춰 가운데를 잘라 (장수, 세로, 가로, 채널) 4차원 배열 하나로 쌓는다
+        3. 평균·표준편차를 axis=(1, 2, 3) 으로 한 번에 계산 — 사진마다 도는 반복문 없이
+        """
+        df = self._require_df()
+        image_dir = Path(image_dir)
+        articles = pd.Series(sorted(df["article_id"].unique()))
+        paths = articles.map(lambda a: image_dir / image_relpath(a))
+        has_image = paths.map(Path.exists)
+        ids = articles[has_image].to_numpy()
+
+        # 파일 읽기(디스크 → 배열)는 사진마다 한 번씩 할 수밖에 없다. 계산은 아래에서 배열 하나로 한다.
+        small = [_as_rgb(plt.imread(p))[::step, ::step] for p in paths[has_image]]
+        h = min(a.shape[0] for a in small)
+        w = min(a.shape[1] for a in small)
+        stack = np.stack([_center_crop(a, h, w) for a in small])
+
+        img_mean = stack.mean(axis=(1, 2, 3))
+        img_std = stack.std(axis=(1, 2, 3))
+
+        df["img_mean"] = df["article_id"].map(pd.Series(img_mean, index=ids))
+        df["img_std"] = df["article_id"].map(pd.Series(img_std, index=ids))
+
+        self.image_stack, self.image_ids = stack, ids
+        self.image_summary = {
+            "images": len(ids),
+            "step": step,
+            "stack_shape": stack.shape,
+            "products_with_image": f"{len(ids):,} / {len(articles):,}",
+            "rows_with_image": f"{df['img_mean'].notna().sum():,} / {len(df):,}",
+        }
         return df
 
     def handle_missing_values(
