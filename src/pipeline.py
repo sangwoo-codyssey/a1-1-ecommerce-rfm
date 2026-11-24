@@ -116,3 +116,19 @@ class DataAnalyzer:
             "seconds": round(time.perf_counter() - started, 1),
         }
         return self.df
+
+    def _require_df(self) -> pd.DataFrame:
+        if self.df is None:
+            raise RuntimeError("load_data() 를 먼저 실행해야 한다")
+        return self.df
+
+    def add_text_features(self, col: str = "prod_name") -> pd.DataFrame:
+        """상품명 텍스트에서 단어 수·글자 수 열을 만든다.
+
+        `.str` 접근자는 열 전체에 한 번에 적용되므로 줄마다 도는 반복문이 없다.
+        단어는 공백 기준으로 나눈다("Emery(1)" 은 1단어).
+        """
+        df = self._require_df()
+        df[f"{col}_word_count"] = df[col].str.split().str.len()
+        df[f"{col}_length"] = df[col].str.len()
+        return df
